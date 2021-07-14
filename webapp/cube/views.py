@@ -6,6 +6,8 @@ import talisker.sentry
 import yaml
 
 from pathlib import Path
+from urllib.parse import quote_plus
+
 from requests import Session
 
 from webapp.cube.api import BadgrAPI, EdxAPI
@@ -68,6 +70,11 @@ def cube_microcerts():
     if not is_authorized(sso_user):
         flask.abort(403)
 
+    edx_url = (
+        f"{edx_api.base_url}/auth/login/tpa-saml/"
+        "?auth_entry=login&idp=ubuntuone&next="
+    )
+
     edx_user = edx_api.get_user(sso_user["email"]) if sso_user else None
     if edx_user:
         assertions = {
@@ -90,6 +97,7 @@ def cube_microcerts():
             certified_badge["image"] = assertion["image"]
             certified_badge["share_url"] = assertion["openBadgeId"]
 
+    study_labs = CUBE_CONTENT["study-labs"]
     courses = copy.deepcopy(CUBE_CONTENT["courses"])
     for course in courses:
         attempts = []
@@ -112,37 +120,31 @@ def cube_microcerts():
         elif course["id"] in enrollments:
             course["status"] = "enrolled"
 
-        course["take_url"] = (
-            f"{edx_api.base_url}/courses/{course['id']}"
-            "/courseware/2020/start/?child=first"
+        course_id = course["id"]
+        courseware_name = course_id.split("+")[1]
+
+        course["take_url"] = edx_url + quote_plus(
+            f"/courses/{course_id}/courseware/2020/start/?child=first"
         )
 
-        course["prepare_url"] = (
-            f"{edx_api.base_url}/courses/"
-            f"{CUBE_CONTENT['prepare-course']}/course/"
+        course["study_lab"] = edx_url + quote_plus(
+            f"/courses/{study_labs}/courseware/{courseware_name}/?child=first"
         )
 
-    has_prepare_material = CUBE_CONTENT["prepare-course"] in enrollments
-    prepare_material_url = (
-        f"{edx_api.base_url}/courses/{CUBE_CONTENT['prepare-course']}/course/"
-    )
+    study_labs_url = edx_url + quote_plus(f"/courses/{study_labs}/course/")
 
     return flask.render_template(
         "cube/microcerts.html",
         **{
             "edx_user": edx_user,
-            "edx_register_url": (
-                f"{edx_api.base_url}/"
-                "auth/login/tpa-saml/"
-                "?auth_entry=register&next=%2F&idp=ubuntuone"
-            ),
+            "edx_register_url": f"{edx_url}%2F",
             "sso_user": sso_user,
             "certified_badge": certified_badge,
             "modules": courses,
             "passed_courses": passed_courses,
             "has_enrollments": len(enrollments) > 0,
-            "has_prepare_material": has_prepare_material,
-            "prepare_material_url": prepare_material_url,
+            "has_study_labs": study_labs in enrollments,
+            "study_labs_url": study_labs_url,
         },
     )
 
@@ -154,3 +156,32 @@ def cube_home():
         flask.abort(403)
 
     return flask.render_template("cube/index.html")
+
+
+@login_required
+def cube_study_labs_button():
+    sso_user = user_info(flask.session)
+    if not is_authorized(sso_user):
+        return flask.jsonify({}), 403
+
+    edx_user = edx_api.get_user(sso_user["email"])
+    enrollments = [
+        enrollment["course_details"]["course_id"]
+        for enrollment in edx_api.get_enrollments(edx_user["username"])
+        if enrollment["is_active"]
+    ]
+
+    text = "Purchase study labs access"
+    redirect_url = "/cube/microcerts"
+
+    if CUBE_CONTENT["prepare-course"] in enrollments:
+        text = "Access study labs"
+        prepare_materials_path = quote_plus(
+            f"/courses/{CUBE_CONTENT['prepare-course']}/course/"
+        )
+        redirect_url = (
+            f"{edx_api.base_url}/auth/login/tpa-saml/"
+            f"?auth_entry=login&idp=ubuntuone&next={prepare_materials_path}"
+        )
+
+    return flask.jsonify({"text": text, "redirect_url": redirect_url})

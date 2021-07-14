@@ -22,6 +22,12 @@ from canonicalwebteam.discourse import (
 )
 
 # Local
+from webapp.advantage.api import (
+    UAContractsAPIAuthError,
+    UAContractsAPIError,
+    UAContractsAPIErrorView,
+    UAContractsAPIAuthErrorView,
+)
 from webapp.context import (
     current_year,
     descending_years,
@@ -34,14 +40,15 @@ from webapp.context import (
     releases,
 )
 
-from webapp.cube.views import cube_home, cube_microcerts
+from webapp.advantage.parser import UAContractsValidationError
+from webapp.cube.views import (
+    cube_home,
+    cube_microcerts,
+    cube_study_labs_button,
+    is_authorized,
+)
 
 from webapp.views import (
-    accept_renewal,
-    account_query,
-    advantage_view,
-    advantage_shop_view,
-    advantage_thanks_view,
     BlogCustomGroup,
     BlogCustomTopic,
     BlogPressCentre,
@@ -53,14 +60,6 @@ from webapp.views import (
     download_thank_you,
     appliance_install,
     appliance_portfolio,
-    ensure_purchase_account,
-    get_customer_info,
-    get_purchase,
-    get_renewal,
-    post_advantage_subscriptions,
-    post_anonymised_customer_info,
-    post_customer_info,
-    post_stripe_invoice_id,
     post_build,
     releasenotes_redirect,
     search_snaps,
@@ -69,9 +68,30 @@ from webapp.views import (
     build_engage_index,
     engage_thank_you,
     sitemap_index,
+    account_query,
     sixteen_zero_four,
 )
-from webapp.login import login_handler, logout, user_info
+
+from webapp.advantage.views import (
+    accept_renewal,
+    advantage_view,
+    advantage_shop_view,
+    payment_methods_view,
+    advantage_thanks_view,
+    ensure_purchase_account,
+    get_customer_info,
+    get_purchase,
+    get_renewal,
+    post_advantage_subscriptions,
+    post_anonymised_customer_info,
+    post_payment_method,
+    post_auto_renewal_settings,
+    post_customer_info,
+    post_stripe_invoice_id,
+    cancel_advantage_subscriptions,
+)
+
+from webapp.login import login_handler, logout, user_info, empty_session
 from webapp.security.database import db_session
 from webapp.security.views import (
     create_notice,
@@ -92,6 +112,13 @@ from webapp.security.views import (
     notices_sitemap,
     single_cves_sitemap,
     cves_sitemap,
+)
+
+from webapp.certified.views import (
+    certified_home,
+    certified_model_details,
+    certified_hardware_details,
+    certified_component_details,
 )
 
 
@@ -131,6 +158,86 @@ discourse_api = DiscourseAPI(
 @app.errorhandler(400)
 def bad_request_error(error):
     return flask.render_template("400.html"), 400
+
+
+@app.errorhandler(UAContractsValidationError)
+def ua_contracts_validation_error(error):
+    return flask.jsonify({"errors": str(error)}), 422
+
+
+@app.errorhandler(UAContractsAPIError)
+def ua_contracts_api_error(error):
+    flask.current_app.extensions["sentry"].captureException(
+        extra={
+            "session_keys": flask.session.keys(),
+            "request_url": error.request.url,
+            "request_headers": error.request.headers,
+            "response_headers": error.response.headers,
+            "response_body": error.response.json(),
+            "response_code": error.response.json()["code"],
+            "response_message": error.response.json()["message"],
+        }
+    )
+
+    return (
+        flask.jsonify({"errors": error.response.json()["message"]}),
+        error.response.status_code or 500,
+    )
+
+
+@app.errorhandler(UAContractsAPIErrorView)
+def ua_contracts_api_error_view(error):
+    flask.current_app.extensions["sentry"].captureException(
+        extra={
+            "session_keys": flask.session.keys(),
+            "request_url": error.request.url,
+            "request_headers": error.request.headers,
+            "response_headers": error.response.headers,
+            "response_body": error.response.json(),
+            "response_code": error.response.json()["code"],
+            "response_message": error.response.json()["message"],
+        }
+    )
+
+    return flask.render_template("500.html"), 500
+
+
+@app.errorhandler(UAContractsAPIAuthError)
+def ua_contracts_api_authentication_error(error):
+    flask.current_app.extensions["sentry"].captureException(
+        extra={
+            "session_keys": flask.session.keys(),
+            "request_url": error.request.url,
+            "request_headers": error.request.headers,
+            "response_headers": error.response.headers,
+            "response_body": error.response.json(),
+            "response_code": error.response.json()["code"],
+            "response_message": error.response.json()["message"],
+        }
+    )
+
+    empty_session(flask.session)
+
+    return flask.jsonify({"errors": error.response.json()["message"]}), 401
+
+
+@app.errorhandler(UAContractsAPIAuthErrorView)
+def ua_contracts_api_authentication_error_view(error):
+    flask.current_app.extensions["sentry"].captureException(
+        extra={
+            "session_keys": flask.session.keys(),
+            "request_url": error.request.url,
+            "request_headers": error.request.headers,
+            "response_headers": error.response.headers,
+            "response_body": error.response.json(),
+            "response_code": error.response.json()["code"],
+            "response_message": error.response.json()["message"],
+        }
+    )
+
+    empty_session(flask.session)
+
+    return flask.redirect(flask.request.url)
 
 
 @app.errorhandler(410)
@@ -175,6 +282,7 @@ app.add_url_rule("/sitemap.xml", view_func=sitemap_index)
 app.add_url_rule("/account.json", view_func=account_query)
 app.add_url_rule("/advantage", view_func=advantage_view)
 app.add_url_rule("/advantage/subscribe", view_func=advantage_shop_view)
+app.add_url_rule("/account/payment-methods", view_func=payment_methods_view)
 app.add_url_rule(
     "/advantage/subscribe/thank-you", view_func=advantage_thanks_view
 )
@@ -183,6 +291,11 @@ app.add_url_rule(
     view_func=post_advantage_subscriptions,
     methods=["POST"],
     defaults={"preview": False},
+)
+app.add_url_rule(
+    "/advantage/subscribe",
+    view_func=cancel_advantage_subscriptions,
+    methods=["DELETE"],
 )
 app.add_url_rule(
     "/advantage/subscribe/preview",
@@ -196,6 +309,16 @@ app.add_url_rule(
 app.add_url_rule(
     "/advantage/customer-info-anon",
     view_func=post_anonymised_customer_info,
+    methods=["POST"],
+)
+app.add_url_rule(
+    "/advantage/payment-method",
+    view_func=post_payment_method,
+    methods=["POST"],
+)
+app.add_url_rule(
+    "/advantage/set-auto-renewal",
+    view_func=post_auto_renewal_settings,
     methods=["POST"],
 )
 app.add_url_rule(
@@ -228,6 +351,7 @@ app.add_url_rule(
     view_func=accept_renewal,
     methods=["POST"],
 )
+
 app.add_url_rule(
     (
         "/download"
@@ -623,12 +747,13 @@ core_als_autils_docs.init_app(app)
 # Cube docs
 app.add_url_rule("/cube", view_func=cube_home)
 app.add_url_rule("/cube/microcerts", view_func=cube_microcerts)
+app.add_url_rule("/cube/study/labs", view_func=cube_study_labs_button)
 
 # Charmed OpenStack docs
 openstack_docs = Docs(
     parser=DocParser(
         api=discourse_api,
-        index_topic_id=20990,
+        index_topic_id=20991,
         url_prefix="/openstack/docs",
     ),
     document_template="openstack/docs/document.html",
@@ -648,6 +773,56 @@ app.add_url_rule(
 )
 
 openstack_docs.init_app(app)
+
+# Security Certifications docs
+security_certs_docs = Docs(
+    parser=DocParser(
+        api=discourse_api,
+        index_topic_id=22810,
+        url_prefix="/security/certifications/docs",
+    ),
+    document_template="/security/certifications/docs/document.html",
+    url_prefix="/security/certifications/docs",
+    blueprint_name="security-certs-docs",
+)
+
+# Security Certifications search
+app.add_url_rule(
+    "/security/certifications/docs/search",
+    "security-certs-docs-search",
+    build_search_view(
+        session=session,
+        site="ubuntu.com/security/certifications/docs",
+        template_path="/security/certifications/docs/search-results.html",
+    ),
+)
+
+security_certs_docs.init_app(app)
+
+app.add_url_rule("/certified", view_func=certified_home)
+app.add_url_rule(
+    "/certified/<canonical_id>",
+    view_func=certified_model_details,
+)
+app.add_url_rule(
+    "/certified/<canonical_id>/<release>",
+    view_func=certified_hardware_details,
+)
+app.add_url_rule(
+    "/certified/component/<component_id>",
+    view_func=certified_component_details,
+)
+
+
+@app.before_request
+def cube_require_login_cube_study():
+    if flask.request.path.startswith("/cube/study"):
+        user = user_info(flask.session)
+        if not user:
+            return flask.redirect("/login?next=" + flask.request.path)
+
+        if not is_authorized(user):
+            flask.abort(403)
 
 
 @app.after_request

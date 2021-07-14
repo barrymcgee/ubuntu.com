@@ -14,7 +14,7 @@ import {
 } from "./advantage/contracts-api.js";
 
 import { parseForErrorObject } from "./advantage/error-handler.js";
-import { vatCountries } from "./advantage/vat-countries.js";
+import { vatCountries } from "./advantage/countries-and-states.js";
 
 import {
   setOrderInformation,
@@ -23,6 +23,7 @@ import {
   setRenewalInformation,
 } from "./advantage/set-modal-info.js";
 import { checkoutEvent, purchaseEvent } from "./advantage/ecom-events.js";
+import { getSessionData } from "./utils/getSessionData.js";
 
 const modal = document.getElementById("ua-payment-modal");
 
@@ -51,6 +52,7 @@ const cardErrorElement = document.getElementById("card-errors");
 const paymentErrorElement = document.getElementById("payment-errors");
 
 const forMyselfRadio = document.getElementById("buying_for_myself");
+
 const forOrganisationRadio = document.getElementById(
   "buying_for_an_organisation"
 );
@@ -119,11 +121,13 @@ let progressTimer3;
 let progressTimer4;
 
 let isCustomerInfoSet = false;
+let isCustomerInfoSetFailed = false;
 
 function attachCTAevents() {
   document.addEventListener("click", (e) => {
     const isRenewalCTA = e.target.classList.contains("js-ua-renewal-cta");
     const isShopCTA = e.target.classList.contains("js-ua-shop-cta");
+
     const data = e.target.dataset;
 
     if (isRenewalCTA || isShopCTA) {
@@ -134,7 +138,12 @@ function attachCTAevents() {
       }
     }
 
-    if (currentTransaction.accountId && !isCustomerInfoSet) {
+    if (
+      currentTransaction.accountId &&
+      !isCustomerInfoSet &&
+      !isCustomerInfoSetFailed &&
+      !guestPurchase
+    ) {
       fetchCustomerInfo(currentTransaction.accountId);
     }
 
@@ -168,6 +177,7 @@ function attachCTAevents() {
           price: item.product.price.value,
           product_listing_id: item.listingID,
           quantity: parseInt(item.quantity),
+          period: item.product.period,
         });
       });
 
@@ -195,13 +205,13 @@ function attachCustomerInfoToStripeAccount(paymentMethod) {
     };
   }
 
-  postCustomerInfoToStripeAccount(
-    paymentMethod.id,
-    currentTransaction.accountId,
-    customerInfo.address,
-    customerInfo.name,
-    stripeTaxObject
-  )
+  postCustomerInfoToStripeAccount({
+    paymentMethodID: paymentMethod.id,
+    accountID: currentTransaction.accountId,
+    address: customerInfo.address,
+    name: customerInfo.name,
+    taxID: stripeTaxObject,
+  })
     .then((data) => {
       applyLoggedInPurchaseTotals();
       handleCustomerInfoResponse(paymentMethod, data);
@@ -380,6 +390,7 @@ function applyLoggedInPurchaseTotals() {
 
     postCustomerInfoForPurchasePreview(
       currentTransaction.accountId,
+      customerInfo.name,
       address,
       taxObject
     )
@@ -399,14 +410,39 @@ function applyLoggedInPurchaseTotals() {
           currentTransaction.accountId,
           currentTransaction.products,
           currentTransaction.previousPurchaseId
-        ).then((purchasePreview) => {
-          currentTransaction.total = purchasePreview.total;
-          currentTransaction.tax = purchasePreview.taxAmount;
-          modal.classList.remove("is-processing");
-          setOrderTotals(country, vatApplicable, purchasePreview, modal);
-        });
+        )
+          .then((purchasePreview) => {
+            currentTransaction.total = purchasePreview.total;
+            currentTransaction.tax = purchasePreview.taxAmount;
+            modal.classList.remove("is-processing");
+            if (purchasePreview.errors) {
+              setOrderTotals(
+                null,
+                false,
+                {
+                  total: currentTransaction.subtotal,
+                },
+                modal
+              );
+            } else {
+              setOrderTotals(country, vatApplicable, purchasePreview, modal);
+            }
+          })
+          .catch((error) => {
+            modal.classList.remove("is-processing");
+            setOrderTotals(
+              null,
+              false,
+              {
+                total: currentTransaction.subtotal,
+              },
+              modal
+            );
+            console.error(error);
+          });
       })
       .catch((error) => {
+        modal.classList.remove("is-processing");
         console.error(error);
       });
   }
@@ -440,12 +476,17 @@ function applyRenewalTotals() {
 function fetchCustomerInfo(accountId) {
   getCustomerInfo(accountId)
     .then((res) => {
-      const { name, address } = res.customerInfo;
-      customerInfo = { ...customerInfo, name, address };
+      const name = res.data.accountInfo.name;
+      const address = res.data.customerInfo.address;
+      customerInfo = { ...res.customerInfo, name, address };
       setFormElements();
       isCustomerInfoSet = true;
+      isCustomerInfoSetFailed = false;
     })
-    .catch((e) => console.error(e));
+    .catch((e) => {
+      isCustomerInfoSetFailed = true;
+      console.error(e);
+    });
 }
 
 function setFormElements() {
@@ -591,23 +632,6 @@ function analyticsFriendlyProducts() {
   return products;
 }
 
-function getSessionData(key) {
-  const keyValue = localStorage.getItem(key);
-
-  if (keyValue) {
-    if (key === "gclid") {
-      const gclid = JSON.parse(keyValue);
-      const isGclidValid = new Date().getTime() < gclid.expiryDate;
-      if (gclid && isGclidValid) {
-        return gclid.value;
-      }
-    } else {
-      return keyValue;
-    }
-  }
-  return;
-}
-
 function handleCountryInput() {
   const stateSelect = statesContainer.querySelector("select");
   const provinceSelect = provincesContainer.querySelector("select");
@@ -743,11 +767,12 @@ function handleGuestPaymentMethodResponse(data) {
   // purchases with and then continue
   const paymentMethod = data.paymentMethod;
 
-  ensurePurchaseAccount(
-    customerInfo.email,
-    customerInfo.accountName,
-    paymentMethod.id
-  ).then((data) => {
+  ensurePurchaseAccount({
+    email: customerInfo.email,
+    accountName: customerInfo.accountName,
+    paymentMethodID: paymentMethod.id,
+    country: customerInfo.address.country,
+  }).then((data) => {
     if (data.code) {
       // an error was returned, most likely cause
       // is that the user is trying to make a purchase
@@ -827,6 +852,9 @@ function handleSuccessfulPayment(transaction) {
     const products = analyticsFriendlyProducts();
 
     purchaseEvent(purchaseInfo, products);
+
+    // Remove the product selection from the local storage
+    localStorage.removeItem("ua-subscribe-state");
   }
 
   disableProcessingState();
@@ -1070,7 +1098,6 @@ function showPayMode() {
 function submitMarketoForm() {
   let request = new XMLHttpRequest();
   let formData = new FormData();
-
   formData.append("munchkinId", "066-EOV-335");
   formData.append("formid", 3756);
   formData.append("formVid", 3756);

@@ -27,6 +27,9 @@
           {% with section=nav_sections.ai %}
           {% include 'templates/_footer_item.html' %}
           {% endwith %}
+          {% with section=nav_sections.robotics %}
+          {% include 'templates/_footer_item.html' %}
+          {% endwith %}
         </ul>
       </div>
       <div class="p-footer__nav-col col-2 u-no-margin--bottom">
@@ -79,6 +82,7 @@
             </h2>
             <ul class="second-level-nav">
               <li class="p-footer-list--margin"><a href="/industrial">Industrial</a></li>
+              <li class="p-footer-list--margin"><a href="/gov">Government</a></li>
               <li class="p-footer-list--margin"><a href="/telco">Telco</a></li>
               <li class="p-footer-list--margin"><a href="/financial-services">Finance</a></li>
             </ul>
